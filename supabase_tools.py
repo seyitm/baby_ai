@@ -1,7 +1,7 @@
 import os
 from supabase import create_client, Client
 import json
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 def get_baby_report(baby_id: str, report_type: Optional[str] = "end_of_day_summary") -> str:
@@ -81,3 +81,42 @@ def get_baby_report(baby_id: str, report_type: Optional[str] = "end_of_day_summa
 
     except Exception as e:
         return f"Error: An error occurred while fetching the report from Supabase: {e}"
+
+def get_chat_history(session_id: str) -> List[Dict[str, Any]]:
+    """Fetches chat history for a given session ID from Supabase."""
+    try:
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        if not supabase_url or not supabase_key:
+            return [] # Return empty list if Supabase is not configured
+
+        supabase: Client = create_client(supabase_url, supabase_key)
+        response = (
+            supabase.table("chat_history")
+            .select("role, message_content")
+            .eq("session_id", session_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return response.data if response.data else []
+    except Exception:
+        # In case of an error, return an empty history to not break the chat
+        return []
+
+def add_to_chat_history(session_id: str, role: str, message: str):
+    """Adds a new message to the chat history in Supabase."""
+    try:
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        if not supabase_url or not supabase_key:
+            return
+
+        supabase: Client = create_client(supabase_url, supabase_key)
+        supabase.table("chat_history").insert({
+            "session_id": session_id,
+            "role": role,
+            "message_content": message
+        }).execute()
+    except Exception as e:
+        # Log the error but don't crash the application
+        print(f"Error saving chat history: {e}")
