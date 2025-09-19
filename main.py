@@ -86,7 +86,8 @@ def read_root():
 # Function to run the Uvicorn server
 def start():
     """Starts the Uvicorn server."""
-    port = int(os.environ.get("PORT", 8000))
+    # Use port 8080 as the default, which is common for cloud deployments.
+    port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
 
 if __name__ == "__main__":
