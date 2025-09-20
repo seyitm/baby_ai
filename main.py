@@ -1,7 +1,8 @@
 import uvicorn
 import os
 import uuid
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -12,22 +13,51 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain.memory import ConversationBufferMemory
 from dotenv import load_dotenv
 
-from supabase_tools import get_baby_report, get_chat_history, add_to_chat_history
+from supabase_tools import get_baby_report, get_chat_history, add_to_chat_history, get_baby_id_for_user
+from fastapi.middleware.cors import CORSMiddleware
+
+
 
 # Load environment variables from .env file
 load_dotenv()
-
 # Initialize FastAPI app
 app = FastAPI(
     title="Baby Care Chatbot API",
-    description="A simple API for a baby care chatbot that remembers conversation history.",
-    version="3.0.0",
+    description="A secure API for a baby care chatbot that remembers conversation history.",
+    version="4.0.0",
+)
+origins = os.getenv("CORS_ORIGINS", "http://localhost:8081,https://babyai-production.up.railway.app").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in origins],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["Authorization", "Content-Type", "*"],
 )
 
 # Initialize the ChatGoogleGenerativeAI model
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
 
-# Define the prompt template with a placeholder for memory
+# --- Security ---
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # tokenUrl is not used, but required
+
+def get_current_user_token(token: str = Depends(oauth2_scheme)) -> str:
+    """Dependency to get the bearer token from the request."""
+    return token
+
+# --- Pydantic Models ---
+class ChatInput(BaseModel):
+    question: str
+    # baby_id is no longer needed from the client
+    report_type: Optional[str] = "end_of_day_summary"
+    session_id: Optional[str] = None
+
+class ChatOutput(BaseModel):
+    response: str
+    session_id: str = Field(description="The unique identifier for the conversation session.")
+
+# --- Prompt Template ---
 prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -48,43 +78,37 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-# Pydantic model for the request body
-class ChatInput(BaseModel):
-    question: str
-    baby_id: str
-    report_type: Optional[str] = "end_of_day_summary"
-    session_id: Optional[str] = None
-
-# Pydantic model for the response body
-class ChatOutput(BaseModel):
-    response: str
-    session_id: str = Field(description="The unique identifier for the conversation session.")
-
-
-# Define the /chat endpoint
+# --- Endpoints ---
 @app.post("/chat", response_model=ChatOutput)
-async def chat(chat_input: ChatInput):
+async def chat(
+    chat_input: ChatInput,
+    token: str = Depends(get_current_user_token)
+):
     """
-    Receives a baby_id, a question, and an optional session_id.
-    1. Fetches the baby's report from Supabase.
-    2. Fetches the conversation history for the session.
-    3. Passes the report, history, and question to the LLM.
-    4. Saves the new exchange to the history.
-    5. Returns the answer and session_id.
+    Receives a question, a session_id, and a user's JWT.
+    The user's baby_id is automatically fetched based on their token.
     """
-    # 1. Ensure a session ID exists
     session_id = chat_input.session_id or str(uuid.uuid4())
-
-    # 2. Fetch the report from Supabase
-    report_text = get_baby_report(chat_input.baby_id, chat_input.report_type)
-    if report_text.startswith("Error:"):
+    
+    # Fetch the baby_id for the authenticated user
+    baby_id = get_baby_id_for_user(token)
+    if not baby_id:
         return ChatOutput(
-            response="Üzgünüm, bebeğinizin raporunu alırken bir sorun oluştu. Lütfen daha sonra tekrar deneyin.",
+            response="Üzgünüm, hesabınızla ilişkilendirilmiş bir bebek bilgisi bulamadım.",
             session_id=session_id
         )
 
-    # 3. Fetch chat history and prepare memory
-    history_data = get_chat_history(session_id)
+    report_text = get_baby_report(baby_id, token, chat_input.report_type)
+    if report_text.startswith("Error:"):
+        # Note: In a real app, you might want more specific error handling
+        return ChatOutput(
+            response="Üzgünüm, bebeğinizin raporunu alırken bir sorun oluştu.",
+            session_id=session_id
+        )
+
+    # Fetch and save history using the user's token for security
+    history_data = get_chat_history(session_id, token)
+    
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     for message in history_data:
         if message['role'] == 'human':
@@ -92,7 +116,6 @@ async def chat(chat_input: ChatInput):
         elif message['role'] == 'ai':
             memory.chat_memory.add_ai_message(message['message_content'])
 
-    # 4. Create and invoke the Langchain chain
     chain = prompt | llm | StrOutputParser()
     
     response_text = chain.invoke({
@@ -101,22 +124,20 @@ async def chat(chat_input: ChatInput):
         "question": chat_input.question
     })
 
-    # 5. Save the new question and AI response to the history
-    add_to_chat_history(session_id, "human", chat_input.question)
-    add_to_chat_history(session_id, "ai", response_text)
+    # Save the new exchange to history, also secured with the token
+    add_to_chat_history(session_id, "human", chat_input.question, token)
+    add_to_chat_history(session_id, "ai", response_text, token)
 
-    # 6. Return the answer and session_id
     return ChatOutput(response=response_text, session_id=session_id)
 
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the BabyAI Chatbot API v3.0. Use the /chat endpoint to interact."}
+    return {"message": "Welcome to the BabyAI Chatbot API v4.0. Use /docs for API documentation."}
 
 # Function to run the Uvicorn server
 def start():
     """Starts the Uvicorn server."""
-    # Use port 8080 as the default, which is common for cloud deployments.
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
 
