@@ -57,26 +57,52 @@ class ChatOutput(BaseModel):
     response: str
     session_id: str = Field(description="The unique identifier for the conversation session.")
 
-# --- Prompt Template ---
-prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-            You are BabyAI, a helpful and caring baby care assistant.
-            You will be given a detailed report containing all available information about a specific baby.
-            Your task is to answer the user's question based ONLY on the information provided in that report and the previous conversation history.
-            Do not make up information. If the answer is not in the report, politely say that you do not have that specific information.
-            Your answers must be in Turkish.
-            Here is the baby's report:
-            
-            {report_text}
-            """,
-        ),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("human", "{question}"),
-    ]
-)
+# --- Prompt Templates ---
+def get_context_prompt():
+    """Returns prompt for when baby context is available."""
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+                You are BabyAI, a helpful and caring baby care assistant.
+                You will be given a detailed report containing all available information about a specific baby.
+                Your task is to answer the user's question based ONLY on the information provided in that report and the previous conversation history.
+                Do not make up information. If the answer is not in the report, politely say that you do not have that specific information.
+                Your answers must be in Turkish.
+                Here is the baby's report:
+
+                {report_text}
+                """,
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
+
+def get_general_prompt():
+    """Returns prompt for general baby care questions without specific context."""
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """
+                You are BabyAI, a helpful and caring baby care assistant.
+                You provide general information about baby care, development, and common questions that parents might have.
+                You have general knowledge about baby care but do not have access to specific information about a particular baby.
+                When answering:
+                - Provide helpful, evidence-based general advice
+                - Always mention that this is general information and parents should consult with healthcare professionals
+                - Recommend consulting pediatricians for specific medical concerns
+                - Be encouraging and supportive in your responses
+                - If the question requires specific medical advice, direct them to consult a healthcare professional
+                Your answers must be in Turkish and maintain a caring, professional tone.
+                """,
+            ),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{question}"),
+        ]
+    )
 
 # --- Endpoints ---
 @app.post("/chat", response_model=ChatOutput)
@@ -87,28 +113,35 @@ async def chat(
     """
     Receives a question, a session_id, and a user's JWT.
     The user's baby_id is automatically fetched based on their token.
+    If no baby context is available, AI operates in general mode providing general baby care advice.
     """
     session_id = chat_input.session_id or str(uuid.uuid4())
-    
+
     # Fetch the baby_id for the authenticated user
     baby_id = get_baby_id_for_user(token)
-    if not baby_id:
-        return ChatOutput(
-            response="Üzgünüm, hesabınızla ilişkilendirilmiş bir bebek bilgisi bulamadım.",
-            session_id=session_id
-        )
 
-    report_text = get_baby_report(baby_id, token, chat_input.report_type)
-    if report_text.startswith("Error:"):
-        # Note: In a real app, you might want more specific error handling
-        return ChatOutput(
-            response="Üzgünüm, bebeğinizin raporunu alırken bir sorun oluştu.",
-            session_id=session_id
-        )
+    # Determine if we have baby context and can provide personalized responses
+    has_baby_context = baby_id is not None
+
+    report_text = ""
+    if has_baby_context:
+        report_text = get_baby_report(baby_id, token, chat_input.report_type)
+        # If report fetch fails, fall back to general mode
+        if report_text.startswith("Error:"):
+            has_baby_context = False
+            report_text = ""
+
+    # Select appropriate prompt based on context availability
+    if has_baby_context:
+        prompt_template = get_context_prompt()
+        context_info = "kişiselleştirilmiş"
+    else:
+        prompt_template = get_general_prompt()
+        context_info = "genel bebek bakımı"
 
     # Fetch and save history using the user's token for security
     history_data = get_chat_history(session_id, token)
-    
+
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     for message in history_data:
         if message['role'] == 'human':
@@ -116,13 +149,20 @@ async def chat(
         elif message['role'] == 'ai':
             memory.chat_memory.add_ai_message(message['message_content'])
 
-    chain = prompt | llm | StrOutputParser()
-    
-    response_text = chain.invoke({
-        "report_text": report_text,
-        "chat_history": memory.chat_memory.messages,
-        "question": chat_input.question
-    })
+    chain = prompt_template | llm | StrOutputParser()
+
+    # Prepare response based on context availability
+    if has_baby_context:
+        response_text = chain.invoke({
+            "report_text": report_text,
+            "chat_history": memory.chat_memory.messages,
+            "question": chat_input.question
+        })
+    else:
+        response_text = chain.invoke({
+            "chat_history": memory.chat_memory.messages,
+            "question": chat_input.question
+        })
 
     # Save the new exchange to history, also secured with the token
     add_to_chat_history(session_id, "human", chat_input.question, token)
