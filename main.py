@@ -30,10 +30,10 @@ origins = os.getenv("CORS_ORIGINS", "http://localhost:8081,https://babyai-produc
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in origins],
+    allow_origins=["*"],   # tüm domainlere izin
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type", "*"],
+    allow_headers=["*"],
 )
 
 # Initialize the ChatGoogleGenerativeAI model
