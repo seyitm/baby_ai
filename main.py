@@ -37,7 +37,7 @@ app.add_middleware(
 )
 
 # Initialize the ChatGoogleGenerativeAI model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash")
 
 # --- Security ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token") # tokenUrl is not used, but required
