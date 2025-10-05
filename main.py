@@ -46,7 +46,7 @@ app.add_middleware(
 )
 
 # ===== LLM Init =====
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-1.5-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-flash")
 llm = ChatGoogleGenerativeAI(model=MODEL_NAME)
 
 # ===== Auth Dependency =====
