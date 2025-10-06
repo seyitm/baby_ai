@@ -59,6 +59,7 @@ def get_current_user_token(token: str = Depends(oauth2_scheme)) -> str:
 class ChatInput(BaseModel):
     question: str
     session_id: Optional[str] = None
+    baby_id: Optional[str] = None
 
 class ChatOutput(BaseModel):
     response: str
@@ -194,8 +195,8 @@ async def chat(
     """
     session_id = chat_input.session_id or str(uuid.uuid4())
 
-    # 1. Baby
-    baby_id = get_baby_id_for_user(token)
+    # 1. Baby selection: trust RLS. Use provided baby_id if any; otherwise fallback to latest user's baby
+    baby_id = chat_input.baby_id or get_baby_id_for_user(token)
     has_baby_context = baby_id is not None
 
     # 2. Loglar (gerçek zamanlı bebek kayıtları)
