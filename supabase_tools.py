@@ -183,8 +183,16 @@ def get_baby_logs_for_prompt(baby_id: str, access_token: str, limit: int = 100) 
                                 value = dt.strftime("%H:%M")
                             except:
                                 pass
-                        if value:
-                            details.append(f"{key}: {value}")
+
+                        if value is None:
+                            continue
+
+                        if isinstance(value, str):
+                            value = value.strip()
+                            if value == "":
+                                continue
+
+                        details.append(f"{key}: {value}")
                 
                 prompt_lines.append(f"- {' | '.join(details)}")
         
